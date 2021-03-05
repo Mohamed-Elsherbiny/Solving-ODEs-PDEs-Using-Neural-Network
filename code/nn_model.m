@@ -11,16 +11,20 @@ classdef nn_model <handle
 %===========================================================================
     
     properties
-        name
-        layer_dims
-        cost
-        W
-        B
-        num_iterations
-        learning_rate
-        itr
-        d_dx
-        caches
+        name                % Network Name. 'String'
+        layer_dims          % Layers Dimention. array: ex. [1 2 1]
+        cost                % cost
+        W                   % weight 
+        B                   % bais
+        num_iterations      % number of iteratoins
+        learning_rate       % learning rate
+        itr                 % number of iteratoins at which the optimazation stoped
+        d_dx                % current derivative
+        caches              % All caches of the netwrok(weights and baises)
+        activation          % Type of activation function. ('sigmoid', 'tanh')
+        BC                  % Boundary conditions equation. (NN-BC)
+        NN_output           % Neural Network output
+        eqn                 % ODE/PDE Equation
     end
     
     methods
@@ -31,7 +35,7 @@ classdef nn_model <handle
             end
         end
         %% Initialization
-        function [W, b] = initialize_parameters_deep(obj, layer_dims)
+        function [W, b] = initialize_parameters_deep(obj, layer_dims, number)
     
 %         Arguments:
 %         layer_dims -- array containing the dimensions of each layer in our network
@@ -40,11 +44,14 @@ classdef nn_model <handle
 %         parameters -- containing your parameters "W1", "b1", ..., "WL", "bL":
 %                         Wl -- weight matrix of shape (layer_dims[l], layer_dims[l-1])
 %                         bl -- bias vector of shape (layer_dims[l], 1)
+            if nargin<3
+                number = 1;
+            end
 
             L = length(layer_dims);            % number of layers in the network
             obj.layer_dims = L;
             for L = 2:L
-                W{L-1} = rand(layer_dims(L),layer_dims(L-1))*8 ;
+                W{L-1} = rand(layer_dims(L),layer_dims(L-1))*number ;
                 b{L-1} = ones(layer_dims(L),1)*0.01;
             end
             obj.W = W;
@@ -79,10 +86,17 @@ classdef nn_model <handle
 %       Returns:
 %       A -- the output of the activation function, also called the post-activation value 
 %       cache -- containing "linear_cache" and "activation_cache" stored for computing the backward pass efficiently    
-            if activation == "sigmoid"
+            if strcmp(activation, "sigmoid")
                 [Z, linear_cache] = obj.linear_forward(A_prev, W, b);
                 A = obj.sigmoid(Z);
                 cache = [linear_cache, Z];
+
+            elseif strcmp(activation, "tanh")
+                [Z, linear_cache] = obj.linear_forward(A_prev, W, b);
+                A = tanh(Z);
+                cache = [linear_cache, Z];
+            else
+                error('Error in activation function: choose activation function: sigmoid or tanh')                
             end
 
         end
@@ -101,10 +115,11 @@ classdef nn_model <handle
             A = X;
             L = obj.layer_dims;                 % number of layers in the neural network
             caches = {};
+
             % Implement [LINEAR -> SIGMOID]*(L-1). Add "cache" to the "caches" list.
             for l = 1:L-2
                 A_prev = A ;
-                [A, linear_activation_cache] = obj.linear_activation_forward(A_prev,W{l},b{l},'sigmoid');
+                [A, linear_activation_cache] = obj.linear_activation_forward(A_prev,W{l},b{l},obj.activation);
                 caches = [caches linear_activation_cache];
             end
             
@@ -112,22 +127,29 @@ classdef nn_model <handle
             [AL, linear_cache] = obj.linear_forward(A, W{L-1}, b{L-1});
             caches = {caches linear_cache};
             obj.caches = caches;
+            obj.NN_output = AL;
         end
 
 
         %% Cost Function
-        function cost = loss(obj,AL,Y)
+        function cost = loss(obj,y)
 
 %       Arguments:
-%       AL -- probability vector corresponding to your label predictions, shape (1, number of examples)
-%       Y -- true "label" vector , shape (1, number of examples)
+%       NN -- neural network output and it's derivatives. list = {NN, D NN, D^2 NN, ....}
+%       BC -- Boundary Conditions
 
 %       Returns:
 %       cost -- MSE
-            m = length(Y);
-            cost = 1/m * sum((Y - AL).^2);
-            % dA = -2/m * cost  
+            %%%%%%%%%%%%%%%%%%% Edit Equation here %%%%%%%%%%%%%%%%%%%
+            obj.gradient_X();
+            obj.eqn = obj.d_dx{1}{:};
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Diffrential equation term + Boundary Conditions term
+            m = length(obj.NN_output);
+            cost = 1/m * sum(y - obj.eqn).^2 + sum(obj.BC).^2;
         end
+
+
         %% implement sigmoid_backward
         function [dZ] = sigmoid_backward(obj,dA, activation_cache)
             %       Implements the backward propagation for SIGMOID unit.
@@ -142,7 +164,21 @@ classdef nn_model <handle
             Z = activation_cache;
             dZ = dA .* obj.sigmoid_diff(Z);
         end
+           
+        %% implement tanh_backward
+        function [dZ] = tanh_backward(obj,dA, activation_cache)
+            %       Implements the backward propagation for SIGMOID unit.
             
+            %       Arguments:
+            %       dA -- post-activation gradient for current layer l 
+            %       activation_cache -- (A_prev, W, b) coming from the forward propagation in the current layer
+            
+            %       Returns:
+            %       dZ -- Gradient of the cost with respect to z (current layer l), same shape as z
+                    
+            Z = activation_cache;
+            dZ = dA .* obj.tanh_diff(Z);
+        end
 
 
         %% implement linear_backward
@@ -180,19 +216,24 @@ classdef nn_model <handle
 %       db -- Gradient of the cost with respect to b (current layer l), same shape as b     
             linear_cache = {cache{1:3}};
             activation_cache = cache{4};
-            if activation == 'sigmoid'
+            if strcmp(activation, 'sigmoid')
                 dZ = obj.sigmoid_backward(dA, activation_cache);
                 [dA_prev, dW, db] = obj.linear_backward(dZ, linear_cache);
+
+            elseif strcmp(activation,'tanh')
+                dZ = obj.tanh_backward(dA, activation_cache);
+                [dA_prev, dW, db] = obj.linear_backward(dZ, linear_cache);
+            else
+                error('Error activation function')
             end
 
 
         end
 
         %% L_model_backward
-        function [grad] = L_model_backward(obj,AL, Y, caches)
+        function [grad] = L_model_backward(obj,AL,y, caches)
 %       Arguments:
 %       AL -- probability vector, output of the forward propagation (L_model_forward()) 
-%       Y -- true "label" vector 
 %       caches -- list of caches containing:
 %       every cache of linear_activation_forward() with "sigmoid" (it's caches[l], for l in range(L-1) i.e l = 0...L-1)
 %       the cache of linear_activation_forward() with "Linear" (it's caches[L])
@@ -200,10 +241,14 @@ classdef nn_model <handle
 %       Returns:
 %       grads -- dA, dW and db
 %           
-            m = length(Y);
-            cost = obj.loss(AL,Y);
-
-            dAL = -2/m * (Y-AL);
+            
+            m = length(AL);
+             %%%%%%%%%%%%%%%%%%% Edit Equation here %%%%%%%%%%%%%%%%%%%
+             obj.gradient_X();
+             obj.eqn = obj.d_dx{1}{:};
+             dAL = -2/m .* (y - obj.eqn)  + 2 .* obj.BC .* obj.d_dx{1}{:};
+             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            
             L = obj.layer_dims;
             grad = {};
             % Lth layer
@@ -214,11 +259,11 @@ classdef nn_model <handle
             grad = {grad, {dW_temp, db_temp}}; 
             grad = grad(~cellfun('isempty',grad));
             grad{L-1} = grad{1};
-            
+            activation = obj.activation;
             % L-1 Layers
             for i = L-2:-1:1
                 current_cache = {caches{1}{4*i-3:4*i}} ;
-                [dA_prev_temp, dW_temp, db_temp] = obj.linear_activation_backward(dA_prev_temp, current_cache, 'sigmoid') ;
+                [dA_prev_temp, dW_temp, db_temp] = obj.linear_activation_backward(dA_prev_temp, current_cache, activation) ;
                 %grad = {{dA_prev_temp, dW_temp, db_temp}, grad};
                 grad{i} = {dW_temp, db_temp}; 
             end
@@ -247,7 +292,7 @@ classdef nn_model <handle
         end
         
         %% train
-        function [W, B] = train(obj, input_data, output,print_cost)
+        function [W, B] = train(obj, input_data, output_data,print_cost)
             %       train parameters using gradient descent
             %       Arguments:
             %       input_data --  containing your input data set
@@ -265,16 +310,17 @@ classdef nn_model <handle
             parameters = {w;b};
             learning_rate = obj.learning_rate;
             
-
+            
+            
 
             % training loop
             for i = 1: itr
                 % 1- forward propagation
                 [Al, caches] = obj.L_model_forward(input_data, w, b);
                 % 2- Compute Cost
-                cost = obj.loss(output,Al);
+                cost = obj.loss(output_data);
                 % 3- Backward propagation
-                grads = obj.L_model_backward(Al, output, caches);
+                grads = obj.L_model_backward(input_data,output_data, caches);
                 % 4- Update Parameters
                 [w, b] = obj.update_parameters(parameters, grads, learning_rate);
                 parameters = {w;b};
@@ -292,7 +338,7 @@ classdef nn_model <handle
             obj.cost = cost;
         end
 
-        function gradient_X(obj,AL)
+        function gradient_X(obj,dAL)
 %       Arguments:
 %       AL -- probability vector, output of the forward propagation (L_model_forward()) 
 %       caches -- list of caches containing:
@@ -302,8 +348,11 @@ classdef nn_model <handle
 %       Returns:
 %       void
 %           
-            m = length(AL);
-            dAL = ones(1,m);
+            
+            if nargin<2
+                dAL = 1;
+            end
+            activation = obj.activation;
             L = obj.layer_dims;
             caches = obj.caches;
             % Lth layer
@@ -315,7 +364,7 @@ classdef nn_model <handle
             % L-1 Layers
             for i = L-2:-1:1
                 current_cache = {caches{1}{4*i-3:4*i}} ;
-                [dA_prev_temp, dW_temp, db_temp] = obj.linear_activation_backward(dA_prev_temp, current_cache, 'sigmoid') ;
+                [dA_prev_temp, dW_temp, db_temp] = obj.linear_activation_backward(dA_prev_temp, current_cache, activation) ;
                 obj.d_dx{i} = {dA_prev_temp};
             end
 
@@ -326,10 +375,17 @@ classdef nn_model <handle
         z = 1 ./ (1 + exp(-x));
         end
         
-        %% implement linear_backward
+        %% implement sigmoid
         function [dg] = sigmoid_diff(obj, Z)
             
             dg = obj.sigmoid(Z) .* (1 - obj.sigmoid(Z));
+            
+            
+        end
+
+        function [dg] = tanh_diff(obj, Z)
+            
+            dg = 1 - tanh(Z) .^2;
             
             
         end
