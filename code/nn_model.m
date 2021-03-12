@@ -22,9 +22,10 @@ classdef nn_model <handle
         d_dx                % current derivative
         caches              % All caches of the netwrok(weights and baises)
         activation          % Type of activation function. ('sigmoid', 'tanh')
-        BC                  % Boundary conditions equation. (NN-BC)
+        BC_coeff            % Boundary conditions equation. (NN-BC)
         NN_output           % Neural Network output
         eqn                 % ODE/PDE Equation
+        error               % Error in the cost
     end
     
     methods
@@ -132,7 +133,7 @@ classdef nn_model <handle
 
 
         %% Cost Function
-        function cost = loss(obj,y)
+        function cost = loss(obj,input_data,y)
 
 %       Arguments:
 %       NN -- neural network output and it's derivatives. list = {NN, D NN, D^2 NN, ....}
@@ -140,13 +141,23 @@ classdef nn_model <handle
 
 %       Returns:
 %       cost -- MSE
-            %%%%%%%%%%%%%%%%%%% Edit Equation here %%%%%%%%%%%%%%%%%%%
+           
+            % First Derivative
             obj.gradient_X();
-            obj.eqn = obj.d_dx{1}{:};
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            % Diffrential equation term + Boundary Conditions term
+            df = obj.d_dx{1}{:};
+            % Second Derivative
+            obj.gradient_X(df);
+            ddf = obj.d_dx{1}{:};
+            % Define ODE/PDE
+            [BC,obj.eqn] = DiffEq(input_data,obj.NN_output,df,ddf);
+            Boundary_conditions = sum(BC).^2;
             m = length(obj.NN_output);
-            cost = 1/m * sum(y - obj.eqn).^2 + sum(obj.BC).^2;
+            Diffrential_eq_term = 1/m * sum(y - obj.eqn).^2;
+
+            % Diffrential equation term + Boundary Conditions term
+            cost = Diffrential_eq_term + Boundary_conditions;
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
         end
 
 
@@ -231,9 +242,9 @@ classdef nn_model <handle
         end
 
         %% L_model_backward
-        function [grad] = L_model_backward(obj,AL,y, caches)
+        function [grad] = L_model_backward(obj,input_data,y, caches)
 %       Arguments:
-%       AL -- probability vector, output of the forward propagation (L_model_forward()) 
+%       input_data -- probability vector, output of the forward propagation (L_model_forward()) 
 %       caches -- list of caches containing:
 %       every cache of linear_activation_forward() with "sigmoid" (it's caches[l], for l in range(L-1) i.e l = 0...L-1)
 %       the cache of linear_activation_forward() with "Linear" (it's caches[L])
@@ -241,13 +252,21 @@ classdef nn_model <handle
 %       Returns:
 %       grads -- dA, dW and db
 %           
-            
-            m = length(AL);
-             %%%%%%%%%%%%%%%%%%% Edit Equation here %%%%%%%%%%%%%%%%%%%
-             obj.gradient_X();
-             obj.eqn = obj.d_dx{1}{:};
-             dAL = -2/m .* (y - obj.eqn)  + 2 .* obj.BC .* obj.d_dx{1}{:};
-             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        
+            m = length(obj.NN_output);
+
+            % First Derivative
+            obj.gradient_X();
+            df = obj.d_dx{1}{:};
+            % Second Derivative
+            obj.gradient_X(df);
+            ddf = obj.d_dx{1}{:};
+            % Define ODE/PDE
+            [BC,obj.eqn] = DiffEq(input_data,obj.NN_output,df,ddf);
+            Boundary_conditions = 2 .* BC;
+            Diffrential_eq_term = -2/m .* (y - obj.eqn);  
+
+            dAL =  Diffrential_eq_term + Boundary_conditions;
             
             L = obj.layer_dims;
             grad = {};
@@ -292,7 +311,7 @@ classdef nn_model <handle
         end
         
         %% train
-        function [W, B] = train(obj, input_data, output_data,print_cost)
+        function [W, B] = train(obj, input_data, output_data,nomrlise,print_cost)
             %       train parameters using gradient descent
             %       Arguments:
             %       input_data --  containing your input data set
@@ -301,7 +320,10 @@ classdef nn_model <handle
             %       Returns:
             %       parameters -- containing your updated parameters 
 
-            if nargin<3
+            if nargin<4
+                nomrlise = false;
+                print_cost = false;
+            elseif nargin<5
                 print_cost = false;
             end
             w = obj.W;
@@ -309,8 +331,9 @@ classdef nn_model <handle
             itr = obj.num_iterations;
             parameters = {w;b};
             learning_rate = obj.learning_rate;
-            
-            
+            if nomrlise
+            input_data = obj.preprocess(input_data);
+            end
             
 
             % training loop
@@ -318,16 +341,22 @@ classdef nn_model <handle
                 % 1- forward propagation
                 [Al, caches] = obj.L_model_forward(input_data, w, b);
                 % 2- Compute Cost
-                cost = obj.loss(output_data);
+                cost = obj.loss(input_data,output_data);
                 % 3- Backward propagation
                 grads = obj.L_model_backward(input_data,output_data, caches);
                 % 4- Update Parameters
                 [w, b] = obj.update_parameters(parameters, grads, learning_rate);
                 parameters = {w;b};
                 if print_cost
+                    fprintf('Diff eqn = %f \n',1/500 * sum(output_data - obj.eqn).^2)
+                    fprintf('BC = %f \n', obj.BC_coeff * (obj.NN_output(1) - 0)^2 )
                     fprintf('cost = %f \n',cost)
                 end
-                if cost < 0.001
+                if ~mod(i,1000)
+                    fprintf('cost = %f \n',cost)
+                end
+                if cost < obj.error
+                    fprintf('cost criteria acheived at iteration number %f \n',i)
                     obj.itr = itr;
                     break;
                 end
@@ -369,6 +398,53 @@ classdef nn_model <handle
             end
 
         end
+
+        function [x_preprocess] = preprocess(obj, x)
+            %      normlise x to be between 0 and 1 
+            %       Arguments:
+            %       x --  input data to be normilized
+            %       Returns:
+            %       x_normlized -- normlised data 
+            xmin = min(x');
+            xmax = max(x');
+            variance = xmax - xmin;
+            x_preprocess =   (x - xmin) ./ variance; 
+        end
+
+        function [x_aftprocess] = aftprocess(obj, x)
+            %      normlise x to be between 0 and 1 
+            %       Arguments:
+            %       x --  input data to be normilized
+            %       Returns:
+            %       x_normlized -- normlised data 
+            xmin = min(x');
+            xmax = max(x');
+            variance = xmax - xmin;
+            x_aftprocess =   x  .* variance + xmin; 
+        end
+
+        
+        function [prediction] = predict(obj, x, normilized)
+            %       predict values
+            %       Arguments:
+            %       x --  input data to be normilized
+            %       Returns:
+            %       x_normlized -- normlised data 
+            if normilized
+                xmin = min(x');
+                xmax = max(x');
+                variance = xmax - xmin;
+                x_preprocess =   (x - xmin) ./ variance; 
+                [yhat,cccc] = obj.L_model_forward(x_preprocess,obj.W,obj.B);
+                prediction = obj.aftprocess(yhat);
+            else
+                x_preprocess = x;
+                [yhat,cccc] = obj.L_model_forward(x,obj.W,obj.B);
+                prediction = yhat;
+            end
+        end
+
+        
 
         %%
         function z = sigmoid(obj, x)
